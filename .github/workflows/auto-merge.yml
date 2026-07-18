@@ -1,6 +1,6 @@
 name: Auto-merge whitelisted PRs
 
-# Merges PRs into protected `main` once they are approved.
+# Merges PRs into protected `main` or `staging` once they are approved.
 # Runs with the workflow's GITHUB_TOKEN (contents: write + pull-requests: write),
 # which is the sanctioned path for merging into branch-protected refs.
 on:
@@ -16,9 +16,9 @@ permissions:
 jobs:
   auto-merge:
     runs-on: ubuntu-latest
-    # Only act on the target repo's own PRs (not forks) and approved reviews.
+    # Only act on the target repo's own PRs (not forks) targeting main or staging.
     if: >-
-      github.event.pull_request.base.ref == 'main' &&
+      (github.event.pull_request.base.ref == 'main' || github.event.pull_request.base.ref == 'staging') &&
       github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - name: Whitelisted author check
