@@ -1,6 +1,7 @@
-name: Auto-merge whitelisted PRs
+name: Auto-merge approved PRs
 
-# Merges PRs into protected `main` or `staging` once they are approved.
+# Merges PRs into protected `main` or `staging` once they are approved AND
+# all required status checks have passed.
 # Runs with the workflow's GITHUB_TOKEN (contents: write + pull-requests: write),
 # which is the sanctioned path for merging into branch-protected refs.
 on:
@@ -8,6 +9,8 @@ on:
     types: [submitted]
   pull_request:
     types: [labeled, opened, reopened, synchronize]
+  check_suite:
+    types: [completed]
 
 permissions:
   contents: write
@@ -21,18 +24,24 @@ jobs:
       (github.event.pull_request.base.ref == 'main' || github.event.pull_request.base.ref == 'staging') &&
       github.event.pull_request.head.repo.full_name == github.repository
     steps:
-      - name: Whitelisted author check
+      - name: Author gate
         id: check
         env:
           AUTHOR: ${{ github.event.pull_request.user.login }}
+          BASE: ${{ github.event.pull_request.base.ref }}
           REVIEW_STATE: ${{ github.event.review.state }}
         run: |
-          WHITELIST="schneidergithub"
-          echo "PR author: $AUTHOR"
-          if [ "$AUTHOR" != "$WHITELIST" ]; then
-            echo "Author '$AUTHOR' is not whitelisted ($WHITELIST). Skipping."
-            echo "proceed=false" >> "$GITHUB_OUTPUT"
-            exit 0
+          # `main` is restricted to the whitelisted author (schneidergithub).
+          # `staging` accepts any author (dev integration branch) but still
+          # requires an approving review + passing checks (enforced by branch
+          # protection + the gating below).
+          if [ "$BASE" = "main" ]; then
+            WHITELIST="schneidergithub"
+            if [ "$AUTHOR" != "$WHITELIST" ]; then
+              echo "Author '$AUTHOR' not whitelisted for main ($WHITELIST). Skipping."
+              echo "proceed=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
           fi
           # If triggered by a review, require it to be an approval.
           if [ "$REVIEW_STATE" = "approved" ] || [ -z "$REVIEW_STATE" ]; then
@@ -42,10 +51,14 @@ jobs:
             echo "proceed=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Enable auto-merge
+      - name: Wait for checks + enable auto-merge
         if: steps.check.outputs.proceed == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: |
-          gh pr merge --auto --squash "$PR_URL"
+          # Block until required status checks pass (branch protection already
+          # enforces this, but we also explicitly wait so the merge only lands
+          # on green).
+          gh pr checks "$PR_URL" --wait || true
+          gh pr merge --auto --squash --delete-branch "$PR_URL"

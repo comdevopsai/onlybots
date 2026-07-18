@@ -1,0 +1,21 @@
+name: CI
+
+# Runs automated checks on every PR. The resulting status check is REQUIRED
+# by branch protection on `staging` (and `main`), so a failing check blocks merge.
+on:
+  pull_request:
+    branches: [staging, main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Run repo convention checks
+        run: python3 tests/check_readme.py
