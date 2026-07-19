@@ -1,0 +1,63 @@
+name: Promote staging to main
+
+# Simplified GitFlow promotion: bring `staging` into `main` as a release.
+#
+# WHY A THROWAWAY BRANCH?
+# GitHub forbids merging one PROTECTED branch into another via PR ("Cannot update
+# this protected ref"). Both `staging` and `main` are protected (locked, non-
+# deletable). To keep `staging` locked AND still promote it, this workflow
+# snapshots `staging` into a throwaway UNPROTECTED branch `promote/<run-id>`,
+# opens a PR `promote/<run-id> -> main`, then the human approves and merges via
+# the UI. After merge, the throwaway branch is deleted. `staging` itself is never
+# touched or deleted.
+#
+# Trigger: manual only (workflow_dispatch). Run it from the Actions tab when
+# you want to promote staging -> main. (Push-based auto-promotion is intentionally
+# omitted so promotion stays a deliberate, human-gated release step.)
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout staging
+        uses: actions/checkout@v4
+        with:
+          ref: staging
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create throwaway promote branch
+        id: promote
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PROMOTE="promote/${{ github.run_id }}"
+          git checkout -b "$PROMOTE"
+          git push origin "$PROMOTE"
+          echo "branch=$PROMOTE" >> "$GITHUB_OUTPUT"
+
+      - name: Open PR promote -> main
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ steps.promote.outputs.branch }}
+        run: |
+          URL=$(gh pr create \
+            --base main \
+            --head "$BRANCH" \
+            --title "Promote staging to main ($(date -u +%Y-%m-%d))" \
+            --body "Automated promotion of staging into main via throwaway branch $BRANCH. Approve and merge via the UI; tag-release.yml will tag the merge as a release.")
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "Opened: $URL"
+
+      - name: Request human reviewer
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ steps.pr.outputs.url }}
+        run: |
+          gh pr edit "$PR_URL" --add-reviewer schneidergithub || true
