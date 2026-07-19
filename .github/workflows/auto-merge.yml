@@ -4,13 +4,19 @@ name: Auto-merge approved PRs
 # all required status checks have passed.
 # Runs with the workflow's GITHUB_TOKEN (contents: write + pull-requests: write),
 # which is the sanctioned path for merging into branch-protected refs.
+#
+# Trigger: a reviewer submits an APPROVAL (pull_request_review: submitted).
+# On that event we enable GitHub-native auto-merge (squash). Branch protection
+# blocks the actual merge until required checks pass. After merge, GitHub deletes
+# the head branch if "Automatically delete head branches" is enabled on the
+# branch protection rule (set in the repo UI).
+#
+# NOTE: the workflow NEVER deletes branches itself — deleting staging/main is
+# impossible because this only runs on PRs whose head is a feature branch, and
+# GitHub-native auto-merge only ever removes the merged head branch.
 on:
   pull_request_review:
     types: [submitted]
-  pull_request:
-    types: [labeled, opened, reopened, synchronize]
-  check_suite:
-    types: [completed]
 
 permissions:
   contents: write
@@ -19,22 +25,19 @@ permissions:
 jobs:
   auto-merge:
     runs-on: ubuntu-latest
-    # Only act on the target repo's own PRs (not forks) targeting main or staging.
+    # Only act on the target repo's own PRs (not forks) targeting main or staging,
+    # and only on an actual APPROVAL (not a comment/dismiss/changes-requested).
     if: >-
       (github.event.pull_request.base.ref == 'main' || github.event.pull_request.base.ref == 'staging') &&
-      github.event.pull_request.head.repo.full_name == github.repository
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.review.state == 'approved'
     steps:
-      - name: Author gate
+      - name: Author gate (main is whitelisted)
         id: check
         env:
           AUTHOR: ${{ github.event.pull_request.user.login }}
           BASE: ${{ github.event.pull_request.base.ref }}
-          REVIEW_STATE: ${{ github.event.review.state }}
         run: |
-          # `main` is restricted to the whitelisted author (schneidergithub).
-          # `staging` accepts any author (dev integration branch) but still
-          # requires an approving review + passing checks (enforced by branch
-          # protection + the gating below).
           if [ "$BASE" = "main" ]; then
             WHITELIST="schneidergithub"
             if [ "$AUTHOR" != "$WHITELIST" ]; then
@@ -43,22 +46,14 @@ jobs:
               exit 0
             fi
           fi
-          # If triggered by a review, require it to be an approval.
-          if [ "$REVIEW_STATE" = "approved" ] || [ -z "$REVIEW_STATE" ]; then
-            echo "proceed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "Review state '$REVIEW_STATE' is not an approval. Skipping."
-            echo "proceed=false" >> "$GITHUB_OUTPUT"
-          fi
+          echo "proceed=true" >> "$GITHUB_OUTPUT"
 
-      - name: Wait for checks + enable auto-merge
+      - name: Enable auto-merge (squash)
         if: steps.check.outputs.proceed == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: |
-          # Block until required status checks pass (branch protection already
-          # enforces this, but we also explicitly wait so the merge only lands
-          # on green).
-          gh pr checks "$PR_URL" --wait || true
-          gh pr merge --auto --squash --delete-branch "$PR_URL"
+          # Enable GitHub-native auto-merge. Branch protection blocks the merge
+          # until required status checks pass. Idempotent.
+          gh pr merge --auto --squash "$PR_URL"
