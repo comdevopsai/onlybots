@@ -56,9 +56,28 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           # Block until required status checks pass (branch protection already
           # enforces this, but we also explicitly wait so the merge only lands
           # on green).
           gh pr checks "$PR_URL" --wait || true
-          gh pr merge --auto --squash --delete-branch "$PR_URL"
+          # Enable GitHub-native auto-merge (squash). This also respects the
+          # branch's "delete branch on merge" setting if enabled in the UI.
+          gh pr merge --auto --squash "$PR_URL"
+
+      - name: Delete head branch (safe)
+        if: steps.check.outputs.proceed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          # NEVER delete the protected long-lived branches. Only delete the
+          # short-lived feature head branch that was merged.
+          if [ "$HEAD_REF" = "main" ] || [ "$HEAD_REF" = "staging" ]; then
+            echo "Refusing to delete protected branch '$HEAD_REF'. Skipping."
+            exit 0
+          fi
+          echo "Deleting merged head branch: $HEAD_REF"
+          gh api repos/${{ github.repository }}/git/refs/heads/$HEAD_REF -X DELETE || \
+            echo "Branch delete failed (may already be removed by delete_branch_on_merge)."
