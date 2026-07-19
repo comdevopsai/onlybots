@@ -23,7 +23,13 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          fetch-tags: true
           token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Compute next semver and tag
         env:
@@ -41,6 +47,11 @@ jobs:
             NEXT="v${MAJOR}.${MINOR}.0"
           fi
           echo "Previous: '${LATEST:-none}' -> Next: ${NEXT}"
+          # Guard: don't fail if the tag already exists (idempotent).
+          if git rev-parse "$NEXT" >/dev/null 2>&1; then
+            echo "Tag $NEXT already exists, skipping."
+            exit 0
+          fi
           # Create an annotated tag pointing at the merged commit on main.
           git tag -a "$NEXT" -m "Release ${NEXT} (staging -> main)"
           git push origin "$NEXT"
