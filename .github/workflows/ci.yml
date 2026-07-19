@@ -1,9 +1,12 @@
 name: CI
 
-# Runs automated checks on every PR. The resulting status check is REQUIRED
-# by branch protection on `staging` (and `main`), so a failing check blocks merge.
+# Runs automated checks on every PR and on direct pushes to the long-lived
+# branches. The resulting status check is REQUIRED by branch protection on
+# `staging` and `main`, so a failing check blocks merge.
 on:
   pull_request:
+    branches: [staging, main]
+  push:
     branches: [staging, main]
 
 permissions:
