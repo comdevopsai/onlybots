@@ -5,15 +5,18 @@ name: Auto-merge approved PRs
 # Runs with the workflow's GITHUB_TOKEN (contents: write + pull-requests: write),
 # which is the sanctioned path for merging into branch-protected refs.
 #
-# Triggers:
-#   - pull_request_review: submitted  -> fires when a reviewer approves
-#   - pull_request: opened/sync/labeled -> fires on PR open/update (enables
-#     auto-merge if already approved, e.g. when checks finish after approval)
+# Trigger: a reviewer submits an APPROVAL (pull_request_review: submitted).
+# On that event we enable GitHub-native auto-merge (squash). Branch protection
+# blocks the actual merge until required checks pass. After merge, GitHub deletes
+# the head branch if "Automatically delete head branches" is enabled on the
+# branch protection rule (set in the repo UI).
+#
+# NOTE: the workflow NEVER deletes branches itself — deleting staging/main is
+# impossible because this only runs on PRs whose head is a feature branch, and
+# GitHub-native auto-merge only ever removes the merged head branch.
 on:
   pull_request_review:
     types: [submitted]
-  pull_request:
-    types: [labeled, opened, reopened, synchronize]
 
 permissions:
   contents: write
@@ -22,23 +25,19 @@ permissions:
 jobs:
   auto-merge:
     runs-on: ubuntu-latest
-    # Only act on the target repo's own PRs (not forks) targeting main or staging.
+    # Only act on the target repo's own PRs (not forks) targeting main or staging,
+    # and only on an actual APPROVAL (not a comment/dismiss/changes-requested).
     if: >-
       (github.event.pull_request.base.ref == 'main' || github.event.pull_request.base.ref == 'staging') &&
-      github.event.pull_request.head.repo.full_name == github.repository
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.review.state == 'approved'
     steps:
-      - name: Author gate
+      - name: Author gate (main is whitelisted)
         id: check
         env:
           AUTHOR: ${{ github.event.pull_request.user.login }}
           BASE: ${{ github.event.pull_request.base.ref }}
-          REVIEW_STATE: ${{ github.event.review.state }}
-          EVENT: ${{ github.event_name }}
         run: |
-          # `main` is restricted to the whitelisted author (schneidergithub).
-          # `staging` accepts any author (dev integration branch) but still
-          # requires an approving review + passing checks (enforced by branch
-          # protection + the gating below).
           if [ "$BASE" = "main" ]; then
             WHITELIST="schneidergithub"
             if [ "$AUTHOR" != "$WHITELIST" ]; then
@@ -47,16 +46,7 @@ jobs:
               exit 0
             fi
           fi
-          # Only proceed when there is an actual approval.
-          # On pull_request events (open/sync) we still proceed IF the PR is
-          # already approved (GitHub tracks this); the review event is the
-          # primary trigger.
-          if [ "$REVIEW_STATE" = "approved" ] || [ -z "$REVIEW_STATE" ]; then
-            echo "proceed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "Review state '$REVIEW_STATE' is not an approval. Skipping."
-            echo "proceed=false" >> "$GITHUB_OUTPUT"
-          fi
+          echo "proceed=true" >> "$GITHUB_OUTPUT"
 
       - name: Enable auto-merge (squash)
         if: steps.check.outputs.proceed == 'true'
@@ -64,23 +54,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: |
-          # Enable GitHub-native auto-merge (squash). Branch protection blocks
-          # the actual merge until required checks pass AND an approval exists.
-          # This is idempotent — safe to call on both review and PR-sync events.
+          # Enable GitHub-native auto-merge. Branch protection blocks the merge
+          # until required status checks pass. Idempotent.
           gh pr merge --auto --squash "$PR_URL"
-
-      - name: Delete head branch (safe)
-        if: steps.check.outputs.proceed == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
-        run: |
-          # NEVER delete the protected long-lived branches. Only delete the
-          # short-lived feature head branch that was merged.
-          if [ "$HEAD_REF" = "main" ] || [ "$HEAD_REF" = "staging" ]; then
-            echo "Refusing to delete protected branch '$HEAD_REF'. Skipping."
-            exit 0
-          fi
-          echo "Deleting merged head branch: $HEAD_REF"
-          gh api repos/${{ github.repository }}/git/refs/heads/$HEAD_REF -X DELETE || \
-            echo "Branch delete failed (may already be removed by delete_branch_on_merge)."
