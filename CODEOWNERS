@@ -1,0 +1,11 @@
+# CODEOWNERS for comdevopsai/onlybots
+# https://docs.github.com/repositories/managing-your-repositories-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default owner for everything
+*       @schneidergithub
+
+# CI/CD workflows require the repo owner's review
+/.github/       @schneidergithub
+
+# Documentation
+/*.md           @schneidergithub
