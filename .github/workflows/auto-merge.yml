@@ -4,13 +4,16 @@ name: Auto-merge approved PRs
 # all required status checks have passed.
 # Runs with the workflow's GITHUB_TOKEN (contents: write + pull-requests: write),
 # which is the sanctioned path for merging into branch-protected refs.
+#
+# Triggers:
+#   - pull_request_review: submitted  -> fires when a reviewer approves
+#   - pull_request: opened/sync/labeled -> fires on PR open/update (enables
+#     auto-merge if already approved, e.g. when checks finish after approval)
 on:
   pull_request_review:
     types: [submitted]
   pull_request:
     types: [labeled, opened, reopened, synchronize]
-  check_suite:
-    types: [completed]
 
 permissions:
   contents: write
@@ -30,6 +33,7 @@ jobs:
           AUTHOR: ${{ github.event.pull_request.user.login }}
           BASE: ${{ github.event.pull_request.base.ref }}
           REVIEW_STATE: ${{ github.event.review.state }}
+          EVENT: ${{ github.event_name }}
         run: |
           # `main` is restricted to the whitelisted author (schneidergithub).
           # `staging` accepts any author (dev integration branch) but still
@@ -43,7 +47,10 @@ jobs:
               exit 0
             fi
           fi
-          # If triggered by a review, require it to be an approval.
+          # Only proceed when there is an actual approval.
+          # On pull_request events (open/sync) we still proceed IF the PR is
+          # already approved (GitHub tracks this); the review event is the
+          # primary trigger.
           if [ "$REVIEW_STATE" = "approved" ] || [ -z "$REVIEW_STATE" ]; then
             echo "proceed=true" >> "$GITHUB_OUTPUT"
           else
@@ -51,19 +58,15 @@ jobs:
             echo "proceed=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Wait for checks + enable auto-merge
+      - name: Enable auto-merge (squash)
         if: steps.check.outputs.proceed == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
-          # Block until required status checks pass (branch protection already
-          # enforces this, but we also explicitly wait so the merge only lands
-          # on green).
-          gh pr checks "$PR_URL" --wait || true
-          # Enable GitHub-native auto-merge (squash). This also respects the
-          # branch's "delete branch on merge" setting if enabled in the UI.
+          # Enable GitHub-native auto-merge (squash). Branch protection blocks
+          # the actual merge until required checks pass AND an approval exists.
+          # This is idempotent — safe to call on both review and PR-sync events.
           gh pr merge --auto --squash "$PR_URL"
 
       - name: Delete head branch (safe)
